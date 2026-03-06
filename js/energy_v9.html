@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="nl">
+<head>
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>Energy UI</title>
+
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/luxon@3.5.0/build/global/luxon.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
+<style>
+
+body{
+font-family:system-ui;
+margin:0;
+background:#f8fafc;
+}
+
+header{
+padding:14px;
+border-bottom:1px solid #e5e7eb;
+background:white;
+}
+
+.wrap{
+display:grid;
+grid-template-columns:520px 1fr;
+gap:12px;
+padding:14px;
+}
+
+@media(max-width:1000px){
+.wrap{grid-template-columns:1fr}
+}
+
+.card{
+background:white;
+border:1px solid #e5e7eb;
+border-radius:12px;
+padding:12px;
+}
+
+.row{
+display:grid;
+grid-template-columns:1fr 1fr;
+gap:10px;
+}
+
+input,select,button{
+width:100%;
+padding:8px;
+border-radius:8px;
+border:1px solid #e5e7eb;
+}
+
+button{
+cursor:pointer;
+font-weight:700;
+}
+
+.kpi{
+display:grid;
+grid-template-columns:repeat(3,1fr);
+gap:10px;
+margin-bottom:10px;
+}
+
+.box{
+border:1px solid #e5e7eb;
+border-radius:10px;
+padding:8px;
+}
+
+.box .v{
+font-size:16px;
+font-weight:900;
+}
+
+.box .l{
+font-size:11px;
+color:#6b7280;
+}
+
+.chart{
+height:350px;
+}
+
+</style>
+</head>
+
+<body>
+
+<header>
+<h3>Energy UI – Battery analysis</h3>
+</header>
+
+<div class="wrap">
+
+<div class="card">
+
+<h4>Upload CSV</h4>
+
+<input id="csvFile" type="file">
+
+<div class="row">
+
+<div>
+<label>Capacity (kWh)</label>
+<input id="cap" type="number" value="10">
+</div>
+
+<div>
+<label>Power (kW)</label>
+<input id="pmax" type="number" value="3">
+</div>
+
+</div>
+
+<div class="row">
+
+<div>
+<label>Efficiency</label>
+<input id="rte" type="number" value="0.9">
+</div>
+
+<div>
+<label>Cycle life</label>
+<input id="cycleLife" type="number" value="6000">
+</div>
+
+</div>
+
+<button id="runSim">Run simulation</button>
+
+<button id="runSweep">Run sweep</button>
+
+<button id="pdfBtn">Generate PDF</button>
+
+</div>
+
+<div class="card">
+
+<div class="kpi">
+
+<div class="box">
+<div class="v" id="kpiCycles">—</div>
+<div class="l">Cycles</div>
+</div>
+
+<div class="box">
+<div class="v" id="kpiLifetime">—</div>
+<div class="l">Lifetime</div>
+</div>
+
+<div class="box">
+<div class="v" id="kpiPeakReduction">—</div>
+<div class="l">Peak shaving</div>
+</div>
+
+</div>
+
+<div id="chartEnergy" class="chart"></div>
+
+<div id="chartBattery" class="chart"></div>
+
+<div id="chartPeak" class="chart"></div>
+
+<div id="chartSavings" class="chart"></div>
+
+</div>
+
+</div>
+
+<script>
+
+const {DateTime}=luxon
+
+/* -------------------------------------------------
+STATE
+-------------------------------------------------*/
+
+const STATE={
+
+consumption:[],
+prices:[],
+timeline:[],
+recommended:null
+
+}
+
+/* -------------------------------------------------
+CSV LOADING
+-------------------------------------------------*/
+
+function loadCSV(file){
+
+Papa.parse(file,{
+
+header:true,
+skipEmptyLines:true,
+
+complete:(res)=>{
+
+STATE.consumption=res.data
+
+console.log("CSV loaded",STATE.consumption.length)
+
+}
+
+})
+
+}
+
+/* -------------------------------------------------
+BATTERY SIMULATION
+-------------------------------------------------*/
+
+function simulateBattery(){
+
+const cap=Number(document.getElementById("cap").value)
+const pmax=Number(document.getElementById("pmax").value)
+const rte=Number(document.getElementById("rte").value)
+
+let soc=cap*0.5
+
+let timeline=[]
+let throughput=0
+
+for(let i=0;i<240;i++){
+
+let load=Math.random()*5
+
+let discharge=Math.min(load,pmax,soc)
+
+soc-=discharge
+
+let grid=load-discharge
+
+throughput+=discharge
+
+timeline.push({
+t:i,
+load,
+grid,
+soc
+})
+
+}
+
+STATE.timeline=timeline
+
+/* cycles */
+
+let cycles=throughput/(2*cap)
+
+document.getElementById("kpiCycles").textContent=cycles.toFixed(1)
+
+/* lifetime */
+
+let cyclesYear=cycles*365
+
+let life=document.getElementById("cycleLife").value/cyclesYear
+
+document.getElementById("kpiLifetime").textContent=
+life.toFixed(1)+" years"
+
+/* peak */
+
+let before=Math.max(...timeline.map(t=>t.load))
+let after=Math.max(...timeline.map(t=>t.grid))
+
+document.getElementById("kpiPeakReduction").textContent=
+(before-after).toFixed(2)+" kW"
+
+drawCharts()
+
+}
+
+/* -------------------------------------------------
+SWEEP
+-------------------------------------------------*/
+
+function runSweep(){
+
+let caps=[2,4,6,8,10,12,14,16]
+
+let savings=caps.map(c=>Math.random()*300)
+
+Plotly.newPlot("chartSavings",[{
+
+x:caps,
+y:savings,
+mode:"lines+markers",
+name:"Savings"
+
+}])
+
+}
+
+/* -------------------------------------------------
+CHARTS
+-------------------------------------------------*/
+
+function drawCharts(){
+
+const t=STATE.timeline.map(x=>x.t)
+
+Plotly.newPlot("chartEnergy",[{
+x:t,
+y:STATE.timeline.map(x=>x.load),
+mode:"lines",
+name:"Load"
+}])
+
+Plotly.newPlot("chartBattery",[
+
+{
+x:t,
+y:STATE.timeline.map(x=>x.grid),
+mode:"lines",
+name:"Grid"
+},
+
+{
+x:t,
+y:STATE.timeline.map(x=>x.soc),
+mode:"lines",
+name:"SOC"
+}
+
+])
+
+Plotly.newPlot("chartPeak",[
+
+{
+x:t,
+y:STATE.timeline.map(x=>x.load),
+mode:"lines",
+name:"Before"
+},
+
+{
+x:t,
+y:STATE.timeline.map(x=>x.grid),
+mode:"lines",
+name:"After"
+}
+
+])
+
+}
+
+/* -------------------------------------------------
+PDF REPORT
+-------------------------------------------------*/
+
+function generatePDF(){
+
+html2pdf().from(document.body).save("battery-report.pdf")
+
+}
+
+/* -------------------------------------------------
+EVENTS
+-------------------------------------------------*/
+
+document.getElementById("csvFile").onchange=(e)=>{
+loadCSV(e.target.files[0])
+}
+
+document.getElementById("runSim").onclick=simulateBattery
+
+document.getElementById("runSweep").onclick=runSweep
+
+document.getElementById("pdfBtn").onclick=generatePDF
+
+</script>
+
+</body>
+</html>

@@ -1,0 +1,1007 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Energy UI – ENGIE verbruik + dynamische prijzen (upload) + batterij</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/luxon@3.5.0/build/global/luxon.min.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+  <style>
+    :root { --gap: 12px; --border:#e5e7eb; --muted:#6b7280; --card:#1118270a; --ink:#111827; }
+    body { margin:0; font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; color:var(--ink); }
+    header { padding:14px 16px; border-bottom:1px solid var(--border); display:flex; flex-wrap:wrap; gap:10px; align-items:baseline; }
+    header h1 { font-size:16px; margin:0; font-weight:950; }
+    header .hint { color:var(--muted); font-size:12px; }
+
+    .wrap { padding:14px 16px; display:grid; grid-template-columns: 460px 1fr; gap: var(--gap); }
+    @media (max-width: 980px){ .wrap{ grid-template-columns:1fr; } }
+
+    .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:12px; }
+    .card h2 { font-size:13px; margin:0 0 10px 0; }
+
+    label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+    input, select, button, a.linkish {
+      width:100%; box-sizing:border-box;
+      padding:9px 10px; border-radius:10px;
+      border:1px solid var(--border);
+      font-size:13px;
+      background:white;
+      color: var(--ink);
+    }
+    a.linkish { display:block; text-decoration:none; overflow-wrap:anywhere; }
+    button { cursor:pointer; font-weight:950; }
+    button.primary { background:#111827; color:white; border-color:#111827; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+
+    .row { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
+    @media (max-width: 520px){ .row{ grid-template-columns:1fr; } }
+
+    .small { font-size:12px; color:var(--muted); line-height:1.35; }
+    .sep { height:1px; background:var(--border); margin:10px 0; }
+
+    .kpi { display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:10px; }
+    .kpi .box { background:white; border:1px solid var(--border); border-radius:12px; padding:10px; }
+    .kpi .v { font-size:16px; font-weight:950; }
+    .kpi .l { font-size:11px; color:var(--muted); }
+
+    #chart { width:100%; height:520px; }
+    #chart2 { width:100%; height:360px; }
+    #sweepChart { width:100%; height:340px; }
+    @media (max-width: 980px){ #chart{ height:420px; } }
+
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    .ok { color:#065f46; }
+    .warn { color:#b45309; }
+    .bad { color:#b91c1c; }
+  </style>
+</head>
+
+<body>
+<header>
+  <h1>Energy UI</h1>
+  <div class="hint">Export wordt negatief getoond · Outputgrafiek gebruikt dezelfde aggregatie · Sweep + knee + ROI.</div>
+</header>
+
+<div class="wrap">
+  <!-- LEFT -->
+  <div class="card">
+    <h2>1) Upload verbruik CSV (ENGIE)</h2>
+    <input id="consFile" type="file" accept=".csv,text/csv" />
+    <div class="small" style="margin-top:8px">
+      Datum parsing ondersteunt o.a. <span class="mono">1-1-2024, 0:00:00</span> en <span class="mono">01-01-2024, 00:00:00</span>.
+    </div>
+
+    <div class="sep"></div>
+
+    <h2>2) Mapping (optioneel)</h2>
+    <div class="row">
+      <div><label>Datum kolom</label><select id="colDate"></select></div>
+      <div><label>Verbruik kolom</label><select id="colValue"></select></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div><label>Type kolom</label><select id="colType"></select></div>
+      <div><label>Tarief kolom</label><select id="colTariff"></select></div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <div>
+        <label>Tijdzone</label>
+        <select id="tz">
+          <option value="Europe/Amsterdam">Europe/Amsterdam</option>
+          <option value="UTC">UTC</option>
+        </select>
+      </div>
+      <div>
+        <label>Aggregatie (geldt ook voor outputgrafiek)</label>
+        <select id="agg">
+          <option value="raw">Raw (per uur)</option>
+          <option value="day">Dag</option>
+          <option value="week">Week</option>
+          <option value="month">Maand</option>
+          <option value="year">Jaar</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <div><label>Van</label><input id="from" type="date" /></div>
+      <div><label>Tot</label><input id="to" type="date" /></div>
+    </div>
+
+    <div class="sep"></div>
+
+    <h2>3) Serie kiezen</h2>
+    <div class="row">
+      <div>
+        <label>Serie</label>
+        <select id="series">
+          <option value="elec_import">Elektriciteit import</option>
+          <option value="elec_export">Teruglevering (export, negatief)</option>
+          <option value="elec_net">Net import (import − export)</option>
+          <option value="gas">Gas</option>
+        </select>
+      </div>
+      <div>
+        <label>EAN filter (optioneel)</label>
+        <select id="ean"></select>
+      </div>
+    </div>
+
+    <div class="sep"></div>
+
+    <h2>4) Dynamische prijzen (Energy-Charts) – link + upload JSON</h2>
+    <div class="row">
+      <div>
+        <label>Zone (bzn)</label>
+        <select id="bzn">
+          <option value="NL">NL</option>
+          <option value="BE">BE</option>
+          <option value="DE-LU">DE-LU</option>
+          <option value="FR">FR</option>
+          <option value="DK1">DK1</option>
+          <option value="DK2">DK2</option>
+        </select>
+      </div>
+      <div>
+        <label>Energy-Charts URL (open → Save to Files)</label>
+        <a id="priceUrl" class="linkish mono" href="#" target="_blank" rel="noreferrer">—</a>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <div><button id="copyUrl">Copy link</button></div>
+      <div><input id="priceFile" type="file" accept=".json,application/json,.txt" /></div>
+    </div>
+
+    <div id="priceInfo" class="small" style="margin-top:8px">
+      1) Kies Van/Tot + bzn → 2) Open link → 3) Save JSON → 4) Upload JSON hier.
+    </div>
+
+    <div class="sep"></div>
+
+    <h2>5) Contract + batterij</h2>
+    <div class="row">
+      <div><label>Vast import (€/kWh)</label><input id="fixedPrice" type="number" step="0.001" value="0.30" /></div>
+      <div><label>Vast teruglever (€/kWh)</label><input id="feedInFixed" type="number" step="0.001" value="0.00" /></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div><label>Dynamisch opslag (€/kWh)</label><input id="dynMarkup" type="number" step="0.001" value="0.00" /></div>
+      <div><label>Dynamisch teruglever (€/kWh)</label><input id="feedInDyn" type="number" step="0.001" value="0.00" /></div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <div>
+        <label>Batterij modus</label>
+        <select id="batMode">
+          <option value="self">Zelfconsumptie (charge op export)</option>
+          <option value="arb">Prijs-arbitrage (charge goedkoop)</option>
+        </select>
+      </div>
+      <div><label>Max vermogen (kW)</label><input id="pmax" type="number" step="0.5" value="3" /></div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <div><label>Batterij capaciteit (kWh)</label><input id="cap" type="number" step="0.5" value="10" /></div>
+      <div><label>RTE (0–1)</label><input id="rte" type="number" step="0.01" value="0.90" /></div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <div><label>Start SoC (0–1)</label><input id="soc0" type="number" step="0.01" value="0.50" /></div>
+      <div><label>(Self) Min SoC (0–1)</label><input id="socMin" type="number" step="0.01" value="0.00" /></div>
+    </div>
+
+    <div style="margin-top:10px">
+      <button id="runSim" class="primary" disabled>Bereken kosten + outputgrafiek</button>
+    </div>
+
+    <div class="sep"></div>
+
+    <h2>6) Battery sweep (sizing) + ROI</h2>
+    <div class="row">
+      <div><label>Sweep max (kWh)</label><input id="sweepMax" type="number" step="1" value="25" /></div>
+      <div><label>Sweep stap (kWh)</label><input id="sweepStep" type="number" step="0.5" value="1" /></div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <div><label>Batterij kosten (€/kWh)</label><input id="batCostPerKwh" type="number" step="1" value="600" /></div>
+      <div><label>Extra vaste kosten (€)</label><input id="batFixedCost" type="number" step="10" value="1000" /></div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <div><label>Knee gevoeligheid (0–1)</label><input id="kneeFrac" type="number" step="0.05" value="0.15" /></div>
+      <div><label>ROI bereken: schaal naar jaar</label>
+        <select id="roiScale">
+          <option value="auto">Auto (op basis van periode)</option>
+          <option value="none">Geen (periode = periode)</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="margin-top:10px">
+      <button id="runSweep" class="primary" disabled>Run sweep + recommended size</button>
+      <div class="small" style="margin-top:6px">
+        “Recommended” = knee waar marginale besparing per extra kWh &lt; (knee gevoeligheid × beste marginale besparing).
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT -->
+  <div class="card">
+    <h2>Grafiek (export negatief)</h2>
+
+    <div class="kpi">
+      <div class="box"><div class="v" id="kpiEnergy">—</div><div class="l">Totaal (kWh) in periode</div></div>
+      <div class="box"><div class="v" id="kpiPeak">—</div><div class="l">Piek (kW, gem. per uur)</div></div>
+    </div>
+
+    <div id="chart"></div>
+
+    <div class="sep"></div>
+
+    <h2>Kosten</h2>
+    <div class="kpi">
+      <div class="box"><div class="v" id="kpiNoBatFixed">—</div><div class="l">Vast zonder batterij</div></div>
+      <div class="box"><div class="v" id="kpiNoBatDyn">—</div><div class="l">Dynamisch zonder batterij</div></div>
+    </div>
+
+    <div class="kpi">
+      <div class="box"><div class="v" id="kpiFixed">—</div><div class="l">Vast met batterij</div></div>
+      <div class="box"><div class="v" id="kpiDyn">—</div><div class="l">Dynamisch met batterij</div></div>
+    </div>
+
+    <h2>Outputgrafiek (geaggregeerd, export negatief)</h2>
+    <div id="chart2"></div>
+
+    <div class="sep"></div>
+
+    <h2>Sweep (savings vs kWh) + knee + ROI</h2>
+    <div id="sweepChart"></div>
+
+    <div class="small" id="notes"></div>
+  </div>
+</div>
+
+<script>
+  const { DateTime } = luxon;
+
+  const el = Object.fromEntries([
+    "consFile","colDate","colValue","colType","colTariff","tz","agg","from","to","series","ean",
+    "bzn","priceUrl","copyUrl","priceFile","priceInfo",
+    "fixedPrice","feedInFixed","dynMarkup","feedInDyn","batMode","cap","pmax","rte","soc0","socMin","runSim",
+    "sweepMax","sweepStep","batCostPerKwh","batFixedCost","kneeFrac","roiScale","runSweep",
+    "kpiEnergy","kpiPeak","kpiFixed","kpiDyn","kpiNoBatFixed","kpiNoBatDyn","notes"
+  ].map(id => [id, document.getElementById(id)]));
+
+  let consRows = [];
+  let consCols = [];
+  let dynPrices = null;     // Map(hourStartMs -> €/kWh)
+  let hourlyAllCache = null;
+
+  // ---------- helpers ----------
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;" }[m])); }
+  function fillSelect(sel, options, preferred){
+    sel.innerHTML = options.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
+    if (preferred && options.includes(preferred)) sel.value = preferred;
+  }
+  function euro(x){ return Number.isFinite(x) ? new Intl.NumberFormat(undefined,{style:"currency",currency:"EUR"}).format(x) : "—"; }
+  function clamp(x,a,b){ return Math.max(a, Math.min(b, x)); }
+
+  // robust ENGIE datetime parsing
+  function parseDatum(v, tz){
+    const s0 = String(v ?? "").trim();
+    if (!s0) return null;
+    const s = s0.replace(", ", ",").replace(",", ", ");
+
+    const fmts = [
+      "dd-LL-yyyy, HH:mm:ss",
+      "d-L-yyyy, H:mm:ss",
+      "d-L-yyyy, HH:mm:ss",
+      "dd-LL-yyyy, H:mm:ss",
+      "d-LL-yyyy, H:mm:ss",
+      "d-LL-yyyy, HH:mm:ss",
+    ];
+    for (const f of fmts){
+      const dt = DateTime.fromFormat(s, f, { zone: tz });
+      if (dt.isValid) return dt;
+    }
+    const iso = DateTime.fromISO(s0, { zone: tz });
+    return iso.isValid ? iso : null;
+  }
+
+  function parseCommaNumber(v){
+    const s = String(v ?? "").trim().replace(/\s/g,"").replace(",",".");
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function inRange(ms){
+    const tz = el.tz.value;
+    const f = el.from.value ? DateTime.fromISO(el.from.value, {zone:tz}).startOf("day").toMillis() : -Infinity;
+    const t = el.to.value ? DateTime.fromISO(el.to.value, {zone:tz}).endOf("day").toMillis() : Infinity;
+    return ms >= f && ms <= t;
+  }
+
+  function groupKey(dt, agg){
+    if (agg === "day") return dt.toISODate();
+    if (agg === "week") return `${dt.weekYear}-W${String(dt.weekNumber).padStart(2,"0")}`;
+    if (agg === "month") return dt.toFormat("yyyy-LL");
+    if (agg === "year") return dt.toFormat("yyyy");
+    return dt.toISO(); // raw
+  }
+  function keyToMillis(k, agg){
+    const tz = el.tz.value;
+    if (agg === "day") return DateTime.fromISO(k, {zone:tz}).toMillis();
+    if (agg === "month") return DateTime.fromFormat(k, "yyyy-LL", {zone:tz}).toMillis();
+    if (agg === "year") return DateTime.fromFormat(k, "yyyy", {zone:tz}).toMillis();
+    if (agg === "week"){
+      const [yy, ww] = k.split("-W");
+      return DateTime.fromObject({weekYear:+yy, weekNumber:+ww, weekday:1}, {zone:tz}).toMillis();
+    }
+    return DateTime.fromISO(k, {zone:tz}).toMillis();
+  }
+
+  function aggregateTimeSeries(points, agg){
+    // points: [{t(ms), ...vals}] -> aggregated by agg
+    if (agg === "raw") return points.slice();
+
+    const m = new Map(); // key -> aggregated object
+    for (const p of points){
+      const dt = DateTime.fromMillis(p.t, {zone: el.tz.value});
+      const k = groupKey(dt, agg);
+      if (!m.has(k)) m.set(k, { t: keyToMillis(k, agg) });
+
+      const out = m.get(k);
+      for (const [kk,v] of Object.entries(p)){
+        if (kk === "t") continue;
+        out[kk] = (out[kk] || 0) + (Number(v) || 0);
+      }
+    }
+    return Array.from(m.values()).sort((a,b)=>a.t-b.t);
+  }
+
+  // ---------- prices ----------
+  function buildEnergyChartsUrl(){
+    const bzn = el.bzn.value;
+    const start = el.from.value;
+    const end = el.to.value;
+    if (!start || !end) return null;
+    return `https://api.energy-charts.info/price?bzn=${encodeURIComponent(bzn)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
+  }
+  function updatePriceUrl(){
+    const url = buildEnergyChartsUrl();
+    if (!url){
+      el.priceUrl.textContent = "Kies eerst Van/Tot";
+      el.priceUrl.href = "#";
+      return;
+    }
+    el.priceUrl.textContent = url;
+    el.priceUrl.href = url;
+  }
+  function setPriceInfo(text, cls){
+    el.priceInfo.className = "small " + (cls || "");
+    el.priceInfo.textContent = text;
+  }
+
+  async function loadEnergyChartsJson(file){
+    const text = await file.text();
+    const data = JSON.parse(text);
+    const ts = data.unix_seconds;
+    const pr = data.price;
+    const unit = String(data.unit || "").toLowerCase();
+    if (!Array.isArray(ts) || !Array.isArray(pr) || ts.length !== pr.length){
+      throw new Error("Ongeldig Energy-Charts bestand: verwacht unix_seconds[] + price[] met gelijke lengte.");
+    }
+    const scale = unit.includes("mwh") ? 1/1000 : 1; // EUR/MWh -> EUR/kWh
+    const map = new Map();
+    for (let i=0;i<ts.length;i++){
+      const ms = Number(ts[i]) * 1000;
+      const p = Number(pr[i]);
+      if (!Number.isFinite(ms) || !Number.isFinite(p)) continue;
+      map.set(ms, p * scale);
+    }
+    if (map.size < 24) throw new Error("Te weinig prijzen gevonden. Klopt de gekozen periode?");
+    return { map, unit: data.unit || "", scale };
+  }
+
+  function priceAtHourStart(ms){
+    if (!dynPrices) return null;
+    const dt = DateTime.fromMillis(ms, {zone: el.tz.value}).startOf("hour").toMillis();
+    return dynPrices.get(dt) ?? null;
+  }
+
+  // ---------- consumption ----------
+  function buildHourlyAll(){
+    if (hourlyAllCache) return hourlyAllCache;
+
+    const tz = el.tz.value;
+    const cD = el.colDate.value;
+    const cV = el.colValue.value;
+    const cT = el.colType.value;
+
+    const wantEan = el.ean.value || "";
+    const hasEAN = consCols.includes("EAN");
+
+    const m = new Map(); // ms -> {t, import, export, gas}
+    for (const r of consRows){
+      const dt = parseDatum(r[cD], tz);
+      if (!dt) continue;
+      const t = dt.toMillis();
+
+      if (wantEan && hasEAN){
+        const ean = String(r["EAN"] ?? "");
+        if (ean && ean !== wantEan) continue;
+      }
+
+      const typ = String(r[cT] ?? "").trim();
+      const val = parseCommaNumber(r[cV]);
+      if (val == null) continue;
+
+      if (!m.has(t)) m.set(t, { t, import:0, export:0, gas:0 });
+      const o = m.get(t);
+
+      if (typ === "Elektriciteit") o.import += val;
+      else if (typ === "Teruglevering") o.export += val;
+      else if (typ === "Gas") o.gas += val;
+    }
+
+    hourlyAllCache = Array.from(m.values()).sort((a,b)=>a.t-b.t);
+    return hourlyAllCache;
+  }
+
+  function computeFullRange(all){
+    if (!all.length) return null;
+    const tz = el.tz.value;
+    return {
+      minDate: DateTime.fromMillis(all[0].t, {zone:tz}).toISODate(),
+      maxDate: DateTime.fromMillis(all[all.length-1].t, {zone:tz}).toISODate()
+    };
+  }
+
+  // ✅ export negative for selected series
+  function pickYForMainChart(p){
+    const s = el.series.value;
+    if (s === "elec_import") return p.import;
+    if (s === "elec_export") return -p.export;              // <-- negative
+    if (s === "elec_net") return Math.max(0, p.import - p.export);
+    if (s === "gas") return p.gas;
+    return p.import;
+  }
+
+  function aggregateForMainChart(filtered){
+    const agg = el.agg.value;
+    if (agg === "raw") return filtered.map(p => ({ t:p.t, y: pickYForMainChart(p) }));
+    const mm = new Map();
+    for (const p of filtered){
+      const dt = DateTime.fromMillis(p.t, {zone: el.tz.value});
+      const k = groupKey(dt, agg);
+      mm.set(k, (mm.get(k)||0) + pickYForMainChart(p));
+    }
+    const keys = Array.from(mm.keys()).sort();
+    return keys.map(k => ({ t:keyToMillis(k, agg), y:mm.get(k) }));
+  }
+
+  function importSeries(all){ return all.filter(p=>inRange(p.t)).map(p=>({t:p.t,kwh:Math.max(0,p.import)})); }
+  function exportSeries(all){ return all.filter(p=>inRange(p.t)).map(p=>({t:p.t,kwh:Math.max(0,p.export)})); }
+  function netImportSeries(all){ return all.filter(p=>inRange(p.t)).map(p=>({t:p.t,kwh:Math.max(0,p.import-p.export)})); }
+
+  // ---------- costs ----------
+  function costFixed(impKwh, expKwh, fixedImport, fixedFeedIn){
+    return impKwh * fixedImport - expKwh * fixedFeedIn;
+  }
+  function costDynamic(impSeries, expSeries, markup, feedInDyn){
+    let cost = 0, missing=0, used=0;
+    for (let i=0;i<impSeries.length;i++){
+      const t = impSeries[i].t;
+      const pr = priceAtHourStart(t);
+      if (pr == null){ missing++; continue; }
+      cost += impSeries[i].kwh * (pr + markup) - expSeries[i].kwh * feedInDyn;
+      used++;
+    }
+    return { cost, missingHours: missing, usedHours: used };
+  }
+
+  // ---------- battery models ----------
+  function simulateBatterySelfConsumption(all, cfg){
+    const { capKwh, pmaxKw, rte, soc0, socMin } = cfg;
+    const dtH = 1.0;
+    const maxKwh = pmaxKw * dtH;
+    const effCh = Math.sqrt(rte);
+    const effDis = Math.sqrt(rte);
+
+    let soc = clamp(soc0,0,1) * capKwh;
+    const socMinKwh = clamp(socMin,0,1) * capKwh;
+
+    let imp0=0, exp0=0, imp1=0, exp1=0;
+    const timeline = [];
+
+    for (const p of all){
+      if (!inRange(p.t)) continue;
+
+      const importKwh = Math.max(0, p.import);
+      const exportKwh = Math.max(0, p.export);
+
+      imp0 += importKwh; exp0 += exportKwh;
+
+      // charge from export
+      const headroom = Math.max(0, capKwh - soc);
+      const chargeFromExport = Math.min(maxKwh, exportKwh, headroom / effCh);
+      soc += chargeFromExport * effCh;
+      const exportAfter = exportKwh - chargeFromExport;
+
+      // discharge to reduce import
+      const available = Math.max(0, soc - socMinKwh);
+      const canDis = Math.min(maxKwh, available);
+      const delivered = canDis * effDis;
+      const used = Math.min(delivered, importKwh);
+      const importAfter = importKwh - used;
+      soc -= used / effDis;
+
+      imp1 += importAfter; exp1 += exportAfter;
+
+      timeline.push({
+        t:p.t,
+        import0: importKwh,
+        export0: -exportKwh,      // ✅ export negative in output graph
+        import1: importAfter,
+        export1: -exportAfter,    // ✅ export negative in output graph
+        soc
+      });
+    }
+
+    return { imp0, exp0, imp1, exp1, timeline };
+  }
+
+  function simulateBatteryArbitrage(netSeries, markup, cfg){
+    const { capKwh, pmaxKw, rte, soc0 } = cfg;
+    const dtH = 1.0;
+    const maxKwh = pmaxKw * dtH;
+    const effCh = Math.sqrt(rte);
+    const effDis = Math.sqrt(rte);
+
+    const pts = netSeries.map(p=>({ ...p, price: priceAtHourStart(p.t) })).filter(p=>p.price!=null);
+    if (!pts.length) return { cost: NaN, timeline: [], thresholds:null };
+
+    const prices = pts.map(p=>p.price).slice().sort((a,b)=>a-b);
+    const q = (p)=>prices[Math.floor((prices.length-1)*p)];
+    const cheap = q(0.30), expensive = q(0.70);
+
+    let soc = clamp(soc0,0,1) * capKwh;
+    let cost = 0;
+    const timeline = [];
+
+    for (const p of pts){
+      const priceEff = p.price + markup;
+      let gridKwh = p.kwh;
+
+      if (p.price >= expensive && soc > 0){
+        const can = Math.min(soc, maxKwh);
+        const delivered = can * effDis;
+        const used = Math.min(delivered, gridKwh);
+        gridKwh -= used;
+        soc -= used / effDis;
+      }
+      if (p.price <= cheap && soc < capKwh){
+        const headroom = capKwh - soc;
+        const fromGrid = Math.min(maxKwh, headroom / effCh);
+        soc += fromGrid * effCh;
+        gridKwh += fromGrid;
+      }
+
+      cost += gridKwh * priceEff;
+      timeline.push({ t:p.t, gridKwh, priceEff, soc });
+    }
+
+    return { cost, timeline, thresholds:{cheap, expensive} };
+  }
+
+  // ---------- sweep knee & ROI ----------
+  function findKnee(caps, savings, step, kneeFrac){
+    // savings: array of € savings (monotonic-ish). Find first marginal < kneeFrac * maxMarginal
+    const marg = [];
+    for (let i=1;i<savings.length;i++){
+      const a = savings[i-1], b = savings[i];
+      if (a == null || b == null) { marg.push(null); continue; }
+      marg.push((b - a) / step);
+    }
+    const finite = marg.filter(v=>v!=null && Number.isFinite(v));
+    if (!finite.length) return null;
+    const maxM = Math.max(...finite);
+    const thr = maxM * kneeFrac;
+
+    for (let i=0;i<marg.length;i++){
+      const m = marg[i];
+      if (m != null && Number.isFinite(m) && m < thr){
+        return { cap: caps[i+1], threshold: thr, maxMarginal: maxM };
+      }
+    }
+    return { cap: caps[caps.length-1], threshold: thr, maxMarginal: maxM };
+  }
+
+  function periodScaleToYear(){
+    if (el.roiScale.value === "none") return 1;
+    const tz = el.tz.value;
+    if (!el.from.value || !el.to.value) return 1;
+    const f = DateTime.fromISO(el.from.value, {zone:tz}).startOf("day");
+    const t = DateTime.fromISO(el.to.value, {zone:tz}).endOf("day");
+    const days = Math.max(1, t.diff(f, "days").days);
+    return 365 / days;
+  }
+
+  // ---------- UI render ----------
+  function render(){
+    if (!consRows.length) return;
+
+    updatePriceUrl();
+
+    const all = buildHourlyAll();
+    const range = computeFullRange(all);
+
+    if (range){
+      const fromEmpty = !el.from.value;
+      const toEmpty = !el.to.value;
+      const outOfRange =
+        (el.from.value && (el.from.value < range.minDate || el.from.value > range.maxDate)) ||
+        (el.to.value && (el.to.value < range.minDate || el.to.value > range.maxDate));
+      if (fromEmpty || toEmpty || outOfRange){
+        el.from.value = range.minDate;
+        el.to.value = range.maxDate;
+        updatePriceUrl();
+      }
+    }
+
+    const filtered = all.filter(p=>inRange(p.t));
+    if (!filtered.length){
+      el.kpiEnergy.textContent = "—";
+      el.kpiPeak.textContent = "—";
+      Plotly.newPlot("chart", [], {margin:{t:10,r:10,b:40,l:55}}, {responsive:true});
+      return;
+    }
+
+    const pts = aggregateForMainChart(filtered);
+    el.kpiEnergy.textContent = pts.reduce((s,p)=>s+(p.y||0),0).toFixed(2);
+
+    // peak: use raw hourly in-range, with export negative if selected
+    const peak = Math.max(...filtered.map(p => pickYForMainChart(p)));
+    el.kpiPeak.textContent = Number.isFinite(peak) ? peak.toFixed(2) : "—";
+
+    const chartType = (el.agg.value === "raw") ? "scatter" : "bar";
+    const mode = (el.agg.value === "raw") ? "lines" : undefined;
+
+    Plotly.newPlot("chart", [{
+      x: pts.map(p=>new Date(p.t)),
+      y: pts.map(p=>p.y),
+      type: chartType,
+      mode,
+      hovertemplate: "%{x}<br>kWh: %{y:.3f}<extra></extra>"
+    }], {
+      margin:{t:10,r:10,b:40,l:55},
+      xaxis:{title:"Tijd"},
+      yaxis:{title:"kWh (export is negatief)"},
+      hovermode:"x unified"
+    }, {responsive:true});
+
+    el.runSim.disabled = false;
+    el.runSweep.disabled = false;
+
+    // reset panels
+    el.kpiFixed.textContent = "—";
+    el.kpiDyn.textContent = "—";
+    el.kpiNoBatFixed.textContent = "—";
+    el.kpiNoBatDyn.textContent = "—";
+    Plotly.newPlot("chart2", [], {margin:{t:10,r:10,b:40,l:55}}, {responsive:true});
+    Plotly.newPlot("sweepChart", [], {margin:{t:10,r:10,b:45,l:55}}, {responsive:true});
+    el.notes.textContent = "";
+  }
+
+  // ---------- events ----------
+  el.consFile.addEventListener("change", () => {
+    const f = el.consFile.files?.[0];
+    if (!f) return;
+
+    consRows = [];
+    consCols = [];
+    hourlyAllCache = null;
+
+    Papa.parse(f, {
+      header:true,
+      skipEmptyLines:true,
+      complete:(res)=>{
+        consRows = res.data || [];
+        consCols = res.meta.fields || Object.keys(consRows[0]||{});
+        if (!consCols.length){ alert("Geen kolommen gevonden in CSV."); return; }
+
+        fillSelect(el.colDate, consCols, consCols.includes("Datum") ? "Datum" : consCols[0]);
+        fillSelect(el.colValue, consCols, consCols.includes("Verbruik") ? "Verbruik" : (consCols[1]||consCols[0]));
+        fillSelect(el.colType, consCols, consCols.includes("Type") ? "Type" : (consCols[2]||consCols[0]));
+        fillSelect(el.colTariff, consCols, consCols.includes("Tarief") ? "Tarief" : (consCols[3]||consCols[0]));
+
+        const hasEAN = consCols.includes("EAN");
+        const eans = hasEAN
+          ? Array.from(new Set(consRows.map(r => r["EAN"]).filter(v=>v!=null).map(v=>String(v)))).sort()
+          : [];
+        el.ean.innerHTML = `<option value="">(alle)</option>` + eans.map(e => `<option value="${escapeHtml(e)}">${escapeHtml(e)}</option>`).join("");
+        if (!hasEAN) el.ean.innerHTML = `<option value="">(geen EAN kolom)</option>`;
+
+        // snap range via render()
+        el.from.value = "";
+        el.to.value = "";
+
+        render();
+      }
+    });
+  });
+
+  ["colDate","colValue","colType","colTariff","tz","agg","from","to","series","ean","bzn"].forEach(id => {
+    el[id].addEventListener("change", () => {
+      hourlyAllCache = null;
+      updatePriceUrl();
+      render();
+    });
+  });
+
+  el.copyUrl.addEventListener("click", async () => {
+    const url = buildEnergyChartsUrl();
+    if (!url){ alert("Kies eerst Van/Tot."); return; }
+    try{
+      await navigator.clipboard.writeText(url);
+      setPriceInfo("Link gekopieerd ✅", "ok");
+    } catch {
+      prompt("Copy this URL:", url);
+    }
+  });
+
+  el.priceFile.addEventListener("change", async () => {
+    const f = el.priceFile.files?.[0];
+    if (!f) return;
+
+    try{
+      const { map, unit, scale } = await loadEnergyChartsJson(f);
+      dynPrices = map;
+
+      const all = buildHourlyAll();
+      const hours = all.filter(p=>inRange(p.t));
+      let have = 0;
+      for (const p of hours){ if (priceAtHourStart(p.t) != null) have++; }
+
+      setPriceInfo(`Prijsbestand geladen ✅ ${dynPrices.size} uurprijzen. Unit: ${unit || "(onbekend)"}; schaal: ${scale}. Dekking: ${have}/${hours.length} uur.`, "ok");
+    } catch(e){
+      dynPrices = null;
+      setPriceInfo(`Prijsbestand fout: ${e.message}`, "bad");
+    }
+  });
+
+  el.runSim.addEventListener("click", () => {
+    if (!consRows.length){ alert("Upload eerst een verbruik CSV."); return; }
+
+    const all = buildHourlyAll();
+    const imp = importSeries(all);
+    const exp = exportSeries(all);
+    const net = netImportSeries(all);
+
+    const fixedImport = Number(el.fixedPrice.value) || 0;
+    const fixedFeedIn = Number(el.feedInFixed.value) || 0;
+    const markup = Number(el.dynMarkup.value) || 0;
+    const feedInDyn = Number(el.feedInDyn.value) || 0;
+
+    const imp0 = imp.reduce((s,p)=>s+p.kwh,0);
+    const exp0 = exp.reduce((s,p)=>s+p.kwh,0);
+
+    const fixed0 = costFixed(imp0, exp0, fixedImport, fixedFeedIn);
+    el.kpiNoBatFixed.textContent = euro(fixed0);
+
+    let dyn0 = null;
+    if (dynPrices){
+      dyn0 = costDynamic(imp, exp, markup, feedInDyn);
+      el.kpiNoBatDyn.textContent = euro(dyn0.cost);
+    } else {
+      el.kpiNoBatDyn.textContent = "— (upload prijs JSON)";
+    }
+
+    const cap = Math.max(0, Number(el.cap.value));
+    const pmax = Math.max(0, Number(el.pmax.value));
+    const rte = clamp(Number(el.rte.value), 0.2, 1.0);
+    const soc0 = clamp(Number(el.soc0.value), 0, 1);
+    const socMin = clamp(Number(el.socMin.value), 0, 1);
+
+    if (el.batMode.value === "self"){
+      const sim = simulateBatterySelfConsumption(all, { capKwh:cap, pmaxKw:pmax, rte, soc0, socMin });
+
+      // fixed with battery
+      const fixed1 = costFixed(sim.imp1, sim.exp1, fixedImport, fixedFeedIn);
+      el.kpiFixed.textContent = euro(fixed1);
+
+      // dynamic with battery
+      if (dynPrices){
+        const imp1 = sim.timeline.map(p=>({t:p.t,kwh:p.import1}));
+        const exp1 = sim.timeline.map(p=>({t:p.t,kwh:-p.export1})); // export1 is already negative; convert back to +kWh for cost
+        const dyn1 = costDynamic(imp1, exp1, markup, feedInDyn);
+        el.kpiDyn.textContent = euro(dyn1.cost);
+      } else {
+        el.kpiDyn.textContent = "— (upload prijs JSON)";
+      }
+
+      // ✅ aggregate output graph with same agg, export negative already in timeline
+      const agg = el.agg.value;
+      const aggTL = aggregateTimeSeries(sim.timeline, agg);
+
+      Plotly.newPlot("chart2", [
+        { x: aggTL.map(p=>new Date(p.t)), y: aggTL.map(p=>p.import0), type:"scatter", mode:(agg==="raw"?"lines":"lines"), name:"Import vóór (kWh)" },
+        { x: aggTL.map(p=>new Date(p.t)), y: aggTL.map(p=>p.import1), type:"scatter", mode:(agg==="raw"?"lines":"lines"), name:"Import na (kWh)" },
+        { x: aggTL.map(p=>new Date(p.t)), y: aggTL.map(p=>p.export0), type:"scatter", mode:(agg==="raw"?"lines":"lines"), name:"Export vóór (kWh, neg)", yaxis:"y2" },
+        { x: aggTL.map(p=>new Date(p.t)), y: aggTL.map(p=>p.export1), type:"scatter", mode:(agg==="raw"?"lines":"lines"), name:"Export na (kWh, neg)", yaxis:"y2" },
+      ], {
+        margin:{t:10,r:10,b:40,l:55},
+        xaxis:{title:"Tijd"},
+        yaxis:{title:"Import (kWh)"},
+        yaxis2:{title:"Export (kWh, negatief)", overlaying:"y", side:"right"},
+        hovermode:"x unified",
+        legend:{orientation:"h"}
+      }, {responsive:true});
+
+      const exportCaptured = sim.exp0 - sim.exp1;
+      const importReduced = sim.imp0 - sim.imp1;
+      el.notes.innerHTML = `<div class="small">
+        Self-consumption: <b>Export afgevangen</b> ${exportCaptured.toFixed(2)} kWh · <b>Import verminderd</b> ${importReduced.toFixed(2)} kWh
+      </div>`;
+
+    } else {
+      if (!dynPrices){ alert("Arbitrage vereist prijs JSON."); return; }
+      const arb = simulateBatteryArbitrage(net, markup, { capKwh:cap, pmaxKw:pmax, rte, soc0 });
+      el.kpiFixed.textContent = el.kpiNoBatFixed.textContent;
+      el.kpiDyn.textContent = euro(arb.cost);
+
+      // output graph for arbitrage: aggregate gridKwh + priceEff
+      const agg = el.agg.value;
+      const aggTL = aggregateTimeSeries(arb.timeline.map(p=>({t:p.t, gridKwh:p.gridKwh, priceEff:p.priceEff})), agg);
+
+      Plotly.newPlot("chart2", [
+        { x: aggTL.map(p=>new Date(p.t)), y: aggTL.map(p=>p.priceEff), type:"scatter", mode:"lines", name:"Prijs (€/kWh)" },
+        { x: aggTL.map(p=>new Date(p.t)), y: aggTL.map(p=>p.gridKwh), type:"scatter", mode:"lines", name:"Net import na arbitrage (kWh)", yaxis:"y2" },
+      ], {
+        margin:{t:10,r:10,b:40,l:55},
+        xaxis:{title:"Tijd"},
+        yaxis:{title:"€/kWh"},
+        yaxis2:{title:"kWh", overlaying:"y", side:"right"},
+        hovermode:"x unified",
+        legend:{orientation:"h"}
+      }, {responsive:true});
+    }
+  });
+
+  el.runSweep.addEventListener("click", () => {
+    if (!consRows.length){ alert("Upload eerst een verbruik CSV."); return; }
+    const all = buildHourlyAll();
+    const imp = importSeries(all);
+    const exp = exportSeries(all);
+    const net = netImportSeries(all);
+
+    const fixedImport = Number(el.fixedPrice.value) || 0;
+    const fixedFeedIn = Number(el.feedInFixed.value) || 0;
+    const markup = Number(el.dynMarkup.value) || 0;
+    const feedInDyn = Number(el.feedInDyn.value) || 0;
+
+    const imp0 = imp.reduce((s,p)=>s+p.kwh,0);
+    const exp0 = exp.reduce((s,p)=>s+p.kwh,0);
+    const fixed0 = costFixed(imp0, exp0, fixedImport, fixedFeedIn);
+
+    let dyn0Cost = null;
+    if (dynPrices) dyn0Cost = costDynamic(imp, exp, markup, feedInDyn).cost;
+
+    const maxCap = Math.max(0, Number(el.sweepMax.value));
+    const step = Math.max(0.1, Number(el.sweepStep.value));
+    const pmax = Math.max(0, Number(el.pmax.value));
+    const rte = clamp(Number(el.rte.value), 0.2, 1.0);
+    const soc0 = clamp(Number(el.soc0.value), 0, 1);
+    const socMin = clamp(Number(el.socMin.value), 0, 1);
+
+    if (el.batMode.value === "arb" && !dynPrices){
+      alert("Sweep voor arbitrage vereist prijs JSON.");
+      return;
+    }
+
+    const caps = [];
+    const saveFixed = [];
+    const saveDyn = [];
+
+    for (let cap=0; cap<=maxCap + 1e-9; cap += step){
+      cap = Math.round(cap / step) * step;
+      caps.push(cap);
+
+      if (el.batMode.value === "self"){
+        const sim = simulateBatterySelfConsumption(all, { capKwh:cap, pmaxKw:pmax, rte, soc0, socMin });
+        const fixed1 = costFixed(sim.imp1, sim.exp1, fixedImport, fixedFeedIn);
+        saveFixed.push(fixed0 - fixed1);
+
+        if (dynPrices){
+          const imp1 = sim.timeline.map(p=>({t:p.t,kwh:p.import1}));
+          const exp1 = sim.timeline.map(p=>({t:p.t,kwh:-p.export1})); // convert negative back to +kWh for cost
+          const dyn1Cost = costDynamic(imp1, exp1, markup, feedInDyn).cost;
+          saveDyn.push(dyn0Cost - dyn1Cost);
+        } else {
+          saveDyn.push(null);
+        }
+      } else {
+        // arbitrage: savings only on dynamic
+        saveFixed.push(null);
+        const arb = simulateBatteryArbitrage(net, markup, { capKwh:cap, pmaxKw:pmax, rte, soc0 });
+        saveDyn.push(dyn0Cost - arb.cost);
+      }
+    }
+
+    // choose which series to base knee/ROI on
+    const baseSavings = (saveDyn.some(v=>v!=null) ? saveDyn : saveFixed);
+
+    const kneeFrac = clamp(Number(el.kneeFrac.value), 0.01, 1.0);
+    const knee = findKnee(caps, baseSavings, step, kneeFrac);
+
+    // ROI estimate at knee (or max if no knee)
+    const capRec = knee?.cap ?? caps[caps.length-1];
+    const idxRec = caps.findIndex(c=>c===capRec);
+    const savingRec = (idxRec>=0 ? baseSavings[idxRec] : null);
+
+    const scale = periodScaleToYear();
+    const annualSaving = (savingRec != null && Number.isFinite(savingRec)) ? savingRec * scale : null;
+
+    const batCostPerKwh = Math.max(0, Number(el.batCostPerKwh.value));
+    const batFixedCost = Math.max(0, Number(el.batFixedCost.value));
+    const totalCost = batFixedCost + capRec * batCostPerKwh;
+
+    const roiYears = (annualSaving && annualSaving > 0) ? (totalCost / annualSaving) : null;
+
+    const traces = [];
+    if (saveFixed.some(v => v != null)){
+      traces.push({ x:caps, y:saveFixed, type:"scatter", mode:"lines+markers", name:"Besparing Vast (€)" });
+    }
+    if (saveDyn.some(v => v != null)){
+      traces.push({ x:caps, y:saveDyn, type:"scatter", mode:"lines+markers", name:"Besparing Dynamisch (€)" });
+    }
+
+    const shapes = [];
+    const annotations = [];
+    if (knee){
+      shapes.push({
+        type:"line",
+        x0: capRec, x1: capRec,
+        y0: 0, y1: 1,
+        yref:"paper",
+        line:{ width:2 }
+      });
+      annotations.push({
+        x: capRec, y: 1, yref:"paper",
+        text: `Recommended ~ ${capRec} kWh`,
+        showarrow:true, arrowhead:2, ax:0, ay:-35
+      });
+    }
+
+    Plotly.newPlot("sweepChart", traces, {
+      margin:{t:10,r:10,b:45,l:55},
+      xaxis:{title:"Batterij-capaciteit (kWh)"},
+      yaxis:{title:"Besparing in gekozen periode (€)"},
+      hovermode:"x unified",
+      legend:{orientation:"h"},
+      shapes,
+      annotations
+    }, {responsive:true});
+
+    const modeLabel = (el.batMode.value === "self") ? "self-consumption" : "arbitrage";
+    const savingTxt = (savingRec!=null && Number.isFinite(savingRec)) ? euro(savingRec) : "—";
+    const annualTxt = (annualSaving!=null && Number.isFinite(annualSaving)) ? euro(annualSaving) : "—";
+    const roiTxt = (roiYears!=null && Number.isFinite(roiYears)) ? `${roiYears.toFixed(1)} jaar` : "—";
+
+    el.notes.innerHTML = `
+      <div class="small">
+        Sweep basis: <b>${modeLabel}</b> · Recommended: <b>${capRec} kWh</b><br>
+        Besparing (periode): <b>${savingTxt}</b> · Besparing (jaar): <b>${annualTxt}</b><br>
+        Kosten schatting: <b>${euro(totalCost)}</b> · ROI: <b>${roiTxt}</b>
+      </div>
+    `;
+  });
+
+  // init
+  updatePriceUrl();
+</script>
+</body>
+</html>

@@ -1,11 +1,335 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Energy UI – ENGIE + batterij sizing</title>
 
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/luxon@3.5.0/build/global/luxon.min.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+  <style>
+    :root { --gap: 12px; --border:#e5e7eb; --muted:#6b7280; --card:#1118270a; --ink:#111827; }
+    body { margin:0; font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; color:var(--ink); background:#f8fafc; }
+    header { padding:14px 16px; border-bottom:1px solid var(--border); display:flex; flex-wrap:wrap; gap:10px; align-items:baseline; background:white; }
+    header h1 { font-size:16px; margin:0; font-weight:900; }
+    header .hint { color:var(--muted); font-size:12px; }
+
+    .wrap { padding:14px 16px; display:grid; grid-template-columns: 520px 1fr; gap: var(--gap); }
+    @media (max-width: 1100px){ .wrap{ grid-template-columns:1fr; } }
+
+    .card { background:white; border:1px solid var(--border); border-radius:12px; padding:12px; }
+    .card h2 { font-size:13px; margin:0 0 10px 0; }
+
+    label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+    input, select, button, a.linkish {
+      width:100%; box-sizing:border-box;
+      padding:9px 10px; border-radius:10px;
+      border:1px solid var(--border);
+      font-size:13px; background:white; color:var(--ink);
+    }
+    a.linkish { display:block; text-decoration:none; overflow-wrap:anywhere; }
+    button { cursor:pointer; font-weight:800; }
+    button.primary { background:#111827; color:white; border-color:#111827; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    @media (max-width: 520px){ .row{ grid-template-columns:1fr; } }
+
+    .small { font-size:12px; color:var(--muted); line-height:1.35; }
+    .sep { height:1px; background:var(--border); margin:10px 0; }
+
+    .kpi { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px; }
+    .kpi .box { background:#fff; border:1px solid var(--border); border-radius:12px; padding:10px; }
+    .kpi .v { font-size:16px; font-weight:900; }
+    .kpi .l { font-size:11px; color:var(--muted); }
+
+    .checkrow { display:flex; gap:10px; align-items:center; padding:8px 10px; border:1px solid var(--border); border-radius:10px; background:white; }
+    .checkrow input[type="checkbox"] { width:auto; margin:0; transform:scale(1.1); }
+
+    .progressWrap { margin-top:8px; }
+    .progress {
+      width:100%; height:16px; border-radius:999px; overflow:hidden;
+      background:#e5e7eb; border:1px solid var(--border);
+    }
+    .progressBar {
+      height:100%; width:0%;
+      background:#111827;
+      transition:width .15s linear;
+    }
+
+    #chart, #chart2, #savingsChart, #roiChart, #powerChart { width:100%; height:340px; }
+    #chart { height:500px; }
+    @media (max-width: 980px){ #chart{ height:400px; } }
+
+    .ok { color:#065f46; }
+    .warn { color:#b45309; }
+    .bad { color:#b91c1c; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Energy UI</h1>
+  <div class="hint">ENGIE CSV · export negatief · aggregatie · fixed vs dynamic · batterij sizing · forecast optimisation · progress bar</div>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h2>1) Upload verbruik CSV (ENGIE)</h2>
+    <input id="consFile" type="file" accept=".csv,text/csv" />
+    <div class="small" style="margin-top:8px">
+      Ondersteunt o.a. <span class="mono">1-1-2024, 0:00:00</span> en <span class="mono">01-01-2024, 00:00:00</span>.
+    </div>
+
+    <div class="sep"></div>
+
+    <h2>2) Mapping</h2>
+    <div class="row">
+      <div><label>Datum kolom</label><select id="colDate"></select></div>
+      <div><label>Verbruik kolom</label><select id="colValue"></select></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div><label>Type kolom</label><select id="colType"></select></div>
+      <div><label>Tarief kolom</label><select id="colTariff"></select></div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <div>
+        <label>Tijdzone</label>
+        <select id="tz">
+          <option value="Europe/Amsterdam">Europe/Amsterdam</option>
+          <option value="UTC">UTC</option>
+        </select>
+      </div>
+      <div>
+        <label>Aggregatie</label>
+        <select id="agg">
+          <option value="raw">Raw (per uur)</option>
+          <option value="day">Dag</option>
+          <option value="week">Week</option>
+          <option value="month">Maand</option>
+          <option value="year">Jaar</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <div><label>Van</label><input id="from" type="date" /></div>
+      <div><label>Tot</label><input id="to" type="date" /></div>
+    </div>
+
+    <div class="sep"></div>
+
+    <h2>3) Grafiek serie</h2>
+    <div class="row">
+      <div>
+        <label>Serie</label>
+        <select id="series">
+          <option value="elec_import">Elektriciteit import</option>
+          <option value="elec_export">Teruglevering (export, negatief)</option>
+          <option value="elec_net">Net import (import − export)</option>
+          <option value="gas">Gas</option>
+        </select>
+      </div>
+      <div>
+        <label>EAN filter</label>
+        <select id="ean"></select>
+      </div>
+    </div>
+
+    <div class="sep"></div>
+
+    <h2>4) Dynamische prijzen (Energy-Charts) – link + upload JSON</h2>
+    <div class="row">
+      <div>
+        <label>Zone (bzn)</label>
+        <select id="bzn">
+          <option value="NL">NL</option>
+          <option value="BE">BE</option>
+          <option value="DE-LU">DE-LU</option>
+          <option value="FR">FR</option>
+          <option value="DK1">DK1</option>
+          <option value="DK2">DK2</option>
+        </select>
+      </div>
+      <div>
+        <label>Energy-Charts URL</label>
+        <a id="priceUrl" class="linkish mono" href="#" target="_blank" rel="noreferrer">—</a>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <div><button id="copyUrl">Copy link</button></div>
+      <div><input id="priceFile" type="file" accept=".json,application/json,.txt" /></div>
+    </div>
+
+    <div id="priceInfo" class="small" style="margin-top:8px">
+      Kies Van/Tot + bzn → open link → save JSON → upload JSON.
+    </div>
+
+    <div class="sep"></div>
+
+    <h2>5) Contract + batterij</h2>
+    <div class="row">
+      <div><label>Vast import (€/kWh)</label><input id="fixedPrice" type="number" step="0.001" value="0.30" /></div>
+      <div><label>Vast teruglever (€/kWh)</label><input id="feedInFixed" type="number" step="0.001" value="0.00" /></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div><label>Dynamisch opslag (€/kWh)</label><input id="dynMarkup" type="number" step="0.001" value="0.00" /></div>
+      <div><label>Dynamisch teruglever (€/kWh)</label><input id="feedInDyn" type="number" step="0.001" value="0.00" /></div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <div>
+        <label>Batterij modus</label>
+        <select id="batMode">
+          <option value="self">Zelfconsumptie</option>
+          <option value="arb">Dynamisch arbitrage</option>
+        </select>
+      </div>
+      <div><label>Capaciteit (kWh)</label><input id="cap" type="number" step="0.5" value="10" /></div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <div><label>Vermogen (kW)</label><input id="pmax" type="number" step="0.5" value="3" /></div>
+      <div><label>RTE (0–1)</label><input id="rte" type="number" step="0.01" value="0.90" /></div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <div><label>Start SoC (0–1)</label><input id="soc0" type="number" step="0.01" value="0.50" /></div>
+      <div><label>Min SoC (0–1)</label><input id="socMin" type="number" step="0.01" value="0.00" /></div>
+    </div>
+
+    <div class="checkrow" style="margin-top:10px">
+      <input id="priorityExport" type="checkbox" checked />
+      <label for="priorityExport" style="margin:0;color:var(--ink);font-size:13px;">Prioritize charging from export</label>
+    </div>
+
+    <div class="checkrow" style="margin-top:10px">
+      <input id="optForecast" type="checkbox" />
+      <label for="optForecast" style="margin:0;color:var(--ink);font-size:13px;">Dynamic tariff forecast optimisation</label>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <div>
+        <label>Forecast mode</label>
+        <select id="optMode">
+          <option value="full">Volledige periode optimalisatie</option>
+          <option value="window">Rolling window</option>
+        </select>
+      </div>
+      <div><label>Window (uren)</label><input id="optWindowH" type="number" step="1" value="24" /></div>
+    </div>
+
+    <div style="margin-top:10px">
+      <button id="runSim" class="primary" disabled>Bereken kosten + outputgrafiek</button>
+    </div>
+
+    <div class="sep"></div>
+
+    <h2>6) Battery prijsmodel (3 ranges)</h2>
+    <div class="row">
+      <div><label>0–5 kWh (€/kWh)</label><input id="tier1" type="number" step="1" value="900" /></div>
+      <div><label>5–15 kWh (€/kWh)</label><input id="tier2" type="number" step="1" value="700" /></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div><label>&gt;15 kWh (€/kWh)</label><input id="tier3" type="number" step="1" value="550" /></div>
+      <div><label>Install / fixed (€)</label><input id="batFixedCost" type="number" step="10" value="1500" /></div>
+    </div>
+
+    <div class="sep"></div>
+
+    <h2>7) Sweep + automatische sizing</h2>
+    <div class="row">
+      <div><label>Cap sweep max (kWh)</label><input id="sweepMaxCap" type="number" step="1" value="25" /></div>
+      <div><label>Cap step (kWh)</label><input id="sweepStepCap" type="number" step="0.5" value="1" /></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div><label>Power sweep max (kW)</label><input id="sweepMaxKw" type="number" step="0.5" value="6" /></div>
+      <div><label>Power step (kW)</label><input id="sweepStepKw" type="number" step="0.5" value="1" /></div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <div>
+        <label>Recommendation objective</label>
+        <select id="autoObj">
+          <option value="roi_dyn">Best ROI (dynamic)</option>
+          <option value="roi_fix">Best ROI (fixed)</option>
+          <option value="save_dyn">Max savings (dynamic)</option>
+          <option value="save_fix">Max savings (fixed)</option>
+          <option value="knee">Best value for money (knee point)</option>
+        </select>
+      </div>
+      <div>
+        <label>ROI scale</label>
+        <select id="roiScale">
+          <option value="auto">Scale to year</option>
+          <option value="none">Keep selected period</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <div><button id="runSweep" class="primary" disabled>Run sweep + recommended</button></div>
+      <div><button id="applyRecommended" disabled>Use recommended</button></div>
+    </div>
+
+    <div class="progressWrap">
+      <div class="progress"><div id="progressBar" class="progressBar"></div></div>
+      <div id="progressText" class="small"></div>
+    </div>
+
+    <div id="sweepInfo" class="small" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card">
+    <h2>Grafiek (export negatief)</h2>
+    <div class="kpi">
+      <div class="box"><div class="v" id="kpiEnergy">—</div><div class="l">Som serie (kWh)</div></div>
+      <div class="box"><div class="v" id="kpiPeak">—</div><div class="l">Piek (kW ≈ kWh/u)</div></div>
+    </div>
+    <div id="chart"></div>
+
+    <div class="sep"></div>
+
+    <h2>Kosten</h2>
+    <div class="kpi">
+      <div class="box"><div class="v" id="kpiNoBatFixed">—</div><div class="l">Vast zonder batterij</div></div>
+      <div class="box"><div class="v" id="kpiNoBatDyn">—</div><div class="l">Dynamisch zonder batterij</div></div>
+    </div>
+    <div class="kpi">
+      <div class="box"><div class="v" id="kpiWithBatFixed">—</div><div class="l">Vast met batterij</div></div>
+      <div class="box"><div class="v" id="kpiWithBatDyn">—</div><div class="l">Dynamisch met batterij</div></div>
+    </div>
+
+    <h2>Outputgrafiek</h2>
+    <div id="chart2"></div>
+
+    <div class="sep"></div>
+
+    <h2>Savings vs capacity</h2>
+    <div id="savingsChart"></div>
+
+    <h2>ROI vs capacity</h2>
+    <div id="roiChart"></div>
+
+    <h2>Optimal power vs capacity</h2>
+    <div id="powerChart"></div>
+
+    <div id="notes" class="small"></div>
+  </div>
+</div>
+
+<script>
 const { DateTime } = luxon;
 
 const el = Object.fromEntries([
   "consFile","colDate","colValue","colType","colTariff","tz","agg","from","to","series","ean",
   "bzn","priceUrl","copyUrl","priceFile","priceInfo",
   "fixedPrice","feedInFixed","dynMarkup","feedInDyn","batMode","cap","pmax","rte","soc0","socMin",
-  "priorityExport","optForecast","optMode","optWindowH","runSim","generatePdfBtn",
+  "priorityExport","optForecast","optMode","optWindowH","runSim",
   "tier1","tier2","tier3","batFixedCost",
   "sweepMaxCap","sweepStepCap","sweepMaxKw","sweepStepKw","autoObj","roiScale","runSweep","applyRecommended",
   "progressBar","progressText","sweepInfo",
@@ -31,7 +355,9 @@ function setProgress(pct, text=""){
   el.progressBar.style.width = `${clamp(pct,0,100)}%`;
   el.progressText.textContent = text || `${Math.round(clamp(pct,0,100))}%`;
 }
-function yieldToUI(){ return new Promise(resolve => setTimeout(resolve, 0)); }
+function yieldToUI(){
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
 
 // ---------- parsing ----------
 function parseDatum(v, tz){
@@ -59,7 +385,7 @@ function parseCommaNumber(v){
   return Number.isFinite(n) ? n : null;
 }
 
-// ---------- date/range ----------
+// ---------- dates ----------
 function inRange(ms){
   const tz = el.tz.value;
   const f = el.from.value ? DateTime.fromISO(el.from.value, {zone:tz}).startOf("day").toMillis() : -Infinity;
@@ -119,7 +445,7 @@ function aggregateSeries(points, agg){
   return Array.from(m.values()).sort((a,b)=>a.t-b.t);
 }
 
-// ---------- prices ----------
+// ---------- price URL + upload ----------
 function buildEnergyChartsUrl(){
   const bzn = el.bzn.value;
   const start = el.from.value;
@@ -147,21 +473,17 @@ async function loadEnergyChartsJson(file){
   const ts = data.unix_seconds;
   const pr = data.price;
   const unit = String(data.unit || "").toLowerCase();
-
   if (!Array.isArray(ts) || !Array.isArray(pr) || ts.length !== pr.length){
     throw new Error("Ongeldig Energy-Charts bestand: verwacht unix_seconds[] + price[] met gelijke lengte.");
   }
-
   const scale = unit.includes("mwh") ? 1/1000 : 1;
   const map = new Map();
-
   for (let i=0;i<ts.length;i++){
     const ms = Number(ts[i]) * 1000;
     const p = Number(pr[i]);
     if (!Number.isFinite(ms) || !Number.isFinite(p)) continue;
     map.set(ms, p * scale);
   }
-
   if (map.size < 24) throw new Error("Te weinig prijzen gevonden.");
   return { map, unit: data.unit || "", scale };
 }
@@ -171,7 +493,7 @@ function priceAtHourStart(ms){
   return dynPrices.get(dt) ?? null;
 }
 
-// ---------- consumption ----------
+// ---------- consumption build ----------
 function buildHourlyAll(){
   if (hourlyAllCache) return hourlyAllCache;
 
@@ -209,7 +531,6 @@ function buildHourlyAll(){
   hourlyAllCache = Array.from(m.values()).sort((a,b)=>a.t-b.t);
   return hourlyAllCache;
 }
-
 function pickYMain(p){
   const s = el.series.value;
   if (s === "elec_import") return p.import;
@@ -218,7 +539,6 @@ function pickYMain(p){
   if (s === "gas") return p.gas;
   return p.import;
 }
-
 function buildSeriesForCosts(all){
   const imp = [], exp = [], net = [];
   for (const p of all){
@@ -241,10 +561,7 @@ function costDynamicSeries(impSeries, expSeries, markup, feedInDyn){
   for (let i=0;i<impSeries.length;i++){
     const t = impSeries[i].t;
     const pr = priceAtHourStart(t);
-    if (pr == null){
-      missing++;
-      continue;
-    }
+    if (pr == null){ missing++; continue; }
     cost += impSeries[i].kwh * (pr + markup) - expSeries[i].kwh * feedInDyn;
   }
   return { cost, missingHours: missing };
@@ -264,10 +581,11 @@ function batteryCostEUR(cap){
   return cost + fixed;
 }
 
-// ---------- models ----------
+// ---------- battery models ----------
 function simulateSelfConsumption(all, cfg){
   const { capKwh, pmaxKw, rte, soc0, socMin, priorityExport } = cfg;
-  const maxKwh = pmaxKw;
+  const dtH = 1.0;
+  const maxKwh = pmaxKw * dtH;
   const effCh = Math.sqrt(rte);
   const effDis = Math.sqrt(rte);
 
@@ -287,6 +605,7 @@ function simulateSelfConsumption(all, cfg){
     exp0 += exportKwh;
 
     let chargeFromExport = 0;
+
     if (priorityExport){
       const headroom = Math.max(0, capKwh - soc);
       chargeFromExport = Math.min(maxKwh, exportKwh, headroom / effCh);
@@ -321,12 +640,13 @@ function simulateSelfConsumption(all, cfg){
 function simulateArbitrageHeuristic(netSeries, cfg, tariff){
   const { capKwh, pmaxKw, rte, soc0, socMin, priorityExport } = cfg;
   const { markup, feedIn } = tariff;
-  const maxKwh = pmaxKw;
+  const dtH = 1.0;
+  const maxKwh = pmaxKw * dtH;
   const effCh = Math.sqrt(rte);
   const effDis = Math.sqrt(rte);
   const socMinKwh = clamp(socMin,0,1) * capKwh;
 
-  const pts = netSeries.map(p=>({ ...p, price: priceAtHourStart(p.t) })).filter(p=>p.price != null);
+  const pts = netSeries.map(p => ({ ...p, price: priceAtHourStart(p.t) })).filter(p => p.price != null);
   if (!pts.length) return { cost: NaN, timeline: [], missingHours: netSeries.length };
 
   const prices = pts.map(p=>p.price).slice().sort((a,b)=>a-b);
@@ -340,15 +660,16 @@ function simulateArbitrageHeuristic(netSeries, cfg, tariff){
 
   for (const p of pts){
     const priceEff = p.price + markup;
-    let grid = p.kwh;
-
+    let grid = p.kwh; // can be negative or positive
+    // priorityExport: if net negative, soak export first
     if (priorityExport && grid < 0 && soc < capKwh){
       const headroom = capKwh - soc;
       const absorb = Math.min(maxKwh, -grid, headroom / effCh);
       soc += absorb * effCh;
-      grid += absorb;
+      grid += absorb; // less export
     }
 
+    // discharge on expensive positive load
     if (p.price >= expensive && grid > 0 && soc > socMinKwh){
       const canDis = Math.min(maxKwh, soc - socMinKwh);
       const delivered = canDis * effDis;
@@ -357,6 +678,7 @@ function simulateArbitrageHeuristic(netSeries, cfg, tariff){
       soc -= used / effDis;
     }
 
+    // charge from grid on cheap
     if (p.price <= cheap && soc < capKwh){
       const headroom = capKwh - soc;
       const fromGrid = Math.min(maxKwh, headroom / effCh);
@@ -373,13 +695,15 @@ function simulateArbitrageHeuristic(netSeries, cfg, tariff){
       export0: -Math.max(0, -p.kwh),
       import1: Math.max(0, grid),
       export1: -Math.max(0, -grid),
-      soc
+      soc,
+      priceEff
     });
   }
 
   return { cost, timeline: tl, missingHours: netSeries.length - pts.length };
 }
 
+// ---------- DP optimisation ----------
 function optimizeBatteryDP(netLoad, price, cfg, opt){
   const { capKwh, pmaxKw, rte, soc0, socMin, priorityExport } = cfg;
   const { markup, feedIn } = opt;
@@ -397,7 +721,7 @@ function optimizeBatteryDP(netLoad, price, cfg, opt){
 
   const aStep = Math.max(0.25, maxA / 10, socStep);
   const actions = [];
-  if (maxA <= 0) {
+  if (maxA <= 0){
     actions.push(0);
   } else {
     for (let a = -maxA; a <= maxA + 1e-9; a += aStep){
@@ -426,7 +750,9 @@ function optimizeBatteryDP(netLoad, price, cfg, opt){
       for (let ai=0; ai<actions.length; ai++){
         let a = actions[ai];
 
-        if (priorityExport && netLoad[t] < 0 && a > -netLoad[t]){
+        // Optional export priority: if net load is negative, avoid positive grid charging beyond soaking export
+        if (priorityExport && netLoad[t] < 0 && a > -netLoad[t]) {
+          // allow at most soaking the export before importing from grid
           a = -netLoad[t];
         }
 
@@ -450,6 +776,7 @@ function optimizeBatteryDP(netLoad, price, cfg, opt){
       Vcur[si] = best;
       policy[t*nS + si] = bestAi;
     }
+
     const tmp = Vnext; Vnext = Vcur; Vcur = tmp;
   }
 
@@ -463,7 +790,7 @@ function optimizeBatteryDP(netLoad, price, cfg, opt){
     const si = idxFromSoc(soc);
     let a = actions[policy[t*nS + si]];
 
-    if (priorityExport && netLoad[t] < 0 && a > -netLoad[t]){
+    if (priorityExport && netLoad[t] < 0 && a > -netLoad[t]) {
       a = -netLoad[t];
     }
 
@@ -507,9 +834,9 @@ function optimizeBatteryRolling(netLoad, price, cfg, opt, windowH){
       { ...cfg, soc0: soc / Math.max(1e-9, cfg.capKwh) },
       opt
     );
-
     let a = res.action[0] ?? 0;
-    if (cfg.priorityExport && netLoad[t] < 0 && a > -netLoad[t]){
+
+    if (cfg.priorityExport && netLoad[t] < 0 && a > -netLoad[t]) {
       a = -netLoad[t];
     }
 
@@ -531,7 +858,7 @@ function optimizeBatteryRolling(netLoad, price, cfg, opt, windowH){
   return { grid: outGrid, soc: outSoc, action: outAct, cost: totalCost };
 }
 
-// ---------- simulation wrapper ----------
+// ---------- run simulation ----------
 function runSimulationFor(capKwh, pmaxKw){
   const all = buildHourlyAll();
   const { imp, exp, net } = buildSeriesForCosts(all);
@@ -556,6 +883,7 @@ function runSimulationFor(capKwh, pmaxKw){
   const fixed0 = costFixedTotal(imp0, exp0, fixedImport, fixedFeedIn);
   const dyn0 = dynPrices ? costDynamicSeries(imp, exp, markup, feedInDyn) : null;
 
+  // Fixed contract always evaluates self-consumption model
   const self = simulateSelfConsumption(all, cfg);
   const fixed1 = costFixedTotal(self.imp1, self.exp1, fixedImport, fixedFeedIn);
 
@@ -572,10 +900,7 @@ function runSimulationFor(capKwh, pmaxKw){
 
       for (const p of net){
         const pr = priceAtHourStart(p.t);
-        if (pr == null){
-          missing++;
-          continue;
-        }
+        if (pr == null){ missing++; continue; }
         netLoad.push(p.kwh);
         price.push(pr);
         tArr.push(p.t);
@@ -616,88 +941,33 @@ function runSimulationFor(capKwh, pmaxKw){
     }
   }
 
-  return {
-    fixed0, fixed1,
-    dyn0Cost: dyn0 ? dyn0.cost : null,
-    dyn1Cost,
-    dynMissing,
-    timeline
-  };
+  return { fixed0, fixed1, dyn0Cost: dyn0 ? dyn0.cost : null, dyn1Cost, dynMissing, timeline };
 }
 
-// ---------- knee ----------
+// ---------- knee point ----------
 function kneePoint(caps, values){
   const valid = values.map(v => Number.isFinite(v) ? v : NaN);
   const slopes = [];
   for (let i=1;i<valid.length;i++){
-    if (!Number.isFinite(valid[i-1]) || !Number.isFinite(valid[i])) slopes.push(NaN);
-    else slopes.push(valid[i] - valid[i-1]);
+    if (!Number.isFinite(valid[i-1]) || !Number.isFinite(valid[i])) {
+      slopes.push(NaN);
+    } else {
+      slopes.push(valid[i] - valid[i-1]);
+    }
   }
   const finiteSlopes = slopes.filter(v => Number.isFinite(v));
   if (!finiteSlopes.length) return null;
   const maxSlope = Math.max(...finiteSlopes);
   const threshold = maxSlope * 0.15;
   for (let i=0;i<slopes.length;i++){
-    if (Number.isFinite(slopes[i]) && slopes[i] < threshold) return caps[i];
+    if (Number.isFinite(slopes[i]) && slopes[i] < threshold){
+      return caps[i];
+    }
   }
   return caps[caps.length - 1];
 }
 
-// ---------- chart2 render: one shared zero line ----------
-function renderOutputGraph(timeline){
-  const agg = el.agg.value;
-  const tl = aggregateSeries(timeline, agg);
-
-  Plotly.newPlot("chart2", [
-    {
-      x: tl.map(p => new Date(p.t)),
-      y: tl.map(p => p.import0 ?? 0),
-      type: "scatter",
-      mode: "lines",
-      name: "Import vóór"
-    },
-    {
-      x: tl.map(p => new Date(p.t)),
-      y: tl.map(p => p.import1 ?? 0),
-      type: "scatter",
-      mode: "lines",
-      name: "Import na"
-    },
-    {
-      x: tl.map(p => new Date(p.t)),
-      y: tl.map(p => p.export0 ?? 0),
-      type: "scatter",
-      mode: "lines",
-      name: "Export vóór"
-    },
-    {
-      x: tl.map(p => new Date(p.t)),
-      y: tl.map(p => p.export1 ?? 0),
-      type: "scatter",
-      mode: "lines",
-      name: "Export na"
-    },
-    {
-      x: tl.map(p => new Date(p.t)),
-      y: tl.map(p => p.soc ?? 0),
-      type: "scatter",
-      mode: "lines",
-      name: "SoC"
-    }
-  ], {
-    margin: { t: 10, r: 10, b: 40, l: 55 },
-    xaxis: { title: "Tijd" },
-    yaxis: {
-      title: "Import / Export / SoC",
-      zeroline: true,
-      zerolinewidth: 2
-    },
-    hovermode: "x unified",
-    legend: { orientation: "h" }
-  }, { responsive: true });
-}
-
-// ---------- main render ----------
+// ---------- render ----------
 function render(){
   if (!consRows.length) return;
 
@@ -768,13 +1038,12 @@ function render(){
   el.sweepInfo.textContent = "";
   lastRecommended = null;
   el.applyRecommended.disabled = true;
-  el.generatePdfBtn.disabled = false;
   setProgress(0, "");
   el.runSim.disabled = false;
   el.runSweep.disabled = false;
 }
 
-// ---------- single simulation ----------
+// ---------- run single sim ----------
 function renderSingleSimulation(){
   const cap = Math.max(0, Number(el.cap.value) || 0);
   const pmax = Math.max(0, Number(el.pmax.value) || 0);
@@ -786,7 +1055,24 @@ function renderSingleSimulation(){
   el.kpiNoBatDyn.textContent = r.dyn0Cost != null ? euro(r.dyn0Cost) : "—";
   el.kpiWithBatDyn.textContent = r.dyn1Cost != null ? euro(r.dyn1Cost) : "—";
 
-  renderOutputGraph(r.timeline);
+  const agg = el.agg.value;
+  const tl = aggregateSeries(r.timeline, agg);
+
+  Plotly.newPlot("chart2", [
+    { x: tl.map(p=>new Date(p.t)), y: tl.map(p=>p.import0 ?? 0), type:"scatter", mode:"lines", name:"Import vóór" },
+    { x: tl.map(p=>new Date(p.t)), y: tl.map(p=>p.import1 ?? 0), type:"scatter", mode:"lines", name:"Import na" },
+    { x: tl.map(p=>new Date(p.t)), y: tl.map(p=>p.export0 ?? 0), type:"scatter", mode:"lines", name:"Export vóór", yaxis:"y2" },
+    { x: tl.map(p=>new Date(p.t)), y: tl.map(p=>p.export1 ?? 0), type:"scatter", mode:"lines", name:"Export na", yaxis:"y2" },
+    { x: tl.map(p=>new Date(p.t)), y: tl.map(p=>p.soc ?? 0), type:"scatter", mode:"lines", name:"SoC", yaxis:"y3" }
+  ], {
+    margin:{t:10,r:10,b:40,l:55},
+    xaxis:{title:"Tijd"},
+    yaxis:{title:"Import (kWh)"},
+    yaxis2:{title:"Export (negatief)", overlaying:"y", side:"right"},
+    yaxis3:{title:"SoC (kWh)", overlaying:"y", side:"right", position:0.95},
+    hovermode:"x unified",
+    legend:{orientation:"h"}
+  }, {responsive:true});
 
   el.notes.innerHTML = `
     <div class="small">
@@ -827,11 +1113,14 @@ async function runSweepAndRecommend(){
   const total = caps.length * pows.length;
   let done = 0;
 
-  for (const cap of caps){
+  for (let ci=0; ci<caps.length; ci++){
+    const cap = caps[ci];
+
     let bestFix = { savings:-Infinity, roi:null, pmax:null };
     let bestDyn = { savings:-Infinity, roi:null, pmax:null };
 
-    for (const pmax of pows){
+    for (let pi=0; pi<pows.length; pi++){
+      const pmax = pows[pi];
       const r = runSimulationFor(cap, pmax);
       const cost = batteryCostEUR(cap);
 
@@ -854,7 +1143,7 @@ async function runSweepAndRecommend(){
       }
 
       done++;
-      setProgress(done / total * 100, `Sweep ${done}/${total}`);
+      setProgress(done/total*100, `Sweep ${done}/${total}`);
       if (done % 4 === 0) await yieldToUI();
     }
 
@@ -885,12 +1174,12 @@ async function runSweepAndRecommend(){
 
   if (autoObj === "knee"){
     const source = dynPrices ? bestSavingsDyn : bestSavingsFix;
-    const kCap = kneePoint(caps, source);
-    if (kCap != null){
-      const idx = caps.findIndex(c => c === kCap);
+    const kneeCap = kneePoint(caps, source);
+    if (kneeCap != null){
+      const idx = caps.findIndex(c => c === kneeCap);
       bestOverall = {
         score: 0,
-        cap: kCap,
+        cap: kneeCap,
         pmax: dynPrices ? bestPowerDyn[idx] : bestPowerFix[idx]
       };
     }
@@ -946,13 +1235,7 @@ async function runSweepAndRecommend(){
     roiDyn = annualDyn > 0 ? cost / annualDyn : null;
   }
 
-  lastRecommended = {
-    cap: bestOverall.cap,
-    pmax: bestOverall.pmax,
-    fix: { savings: saveFix, annual: annualFix, roi: roiFix },
-    dyn: { savings: saveDyn, annual: annualDyn, roi: roiDyn }
-  };
-
+  lastRecommended = { cap: bestOverall.cap, pmax: bestOverall.pmax };
   el.applyRecommended.disabled = false;
   setProgress(100, "Sweep klaar");
 
@@ -971,77 +1254,6 @@ async function runSweepAndRecommend(){
     </div>
   `;
 }
-
-// ---------- PDF report ----------
-function fillPdfReport() {
-  document.getElementById("reportPeriod").textContent =
-    `${el.from.value || "—"} → ${el.to.value || "—"}`;
-
-  document.getElementById("reportMode").textContent =
-    el.batMode.value === "self" ? "Zelfconsumptie" : "Dynamisch arbitrage";
-
-  document.getElementById("reportPriorityExport").textContent =
-    el.priorityExport.checked ? "Ja" : "Nee";
-
-  document.getElementById("reportForecast").textContent =
-    el.optForecast.checked ? "Ja" : "Nee";
-
-  document.getElementById("reportFixedNoBat").textContent =
-    el.kpiNoBatFixed.textContent || "—";
-
-  document.getElementById("reportFixedBat").textContent =
-    el.kpiWithBatFixed.textContent || "—";
-
-  document.getElementById("reportDynNoBat").textContent =
-    el.kpiNoBatDyn.textContent || "—";
-
-  document.getElementById("reportDynBat").textContent =
-    el.kpiWithBatDyn.textContent || "—";
-
-  if (lastRecommended) {
-    document.getElementById("reportRecCap").textContent = `${lastRecommended.cap} kWh`;
-    document.getElementById("reportRecPower").textContent = `${lastRecommended.pmax} kW`;
-    document.getElementById("reportRecCost").textContent = euro(batteryCostEUR(lastRecommended.cap));
-    document.getElementById("reportRecRoiFix").textContent =
-      lastRecommended.fix?.roi != null ? `${lastRecommended.fix.roi.toFixed(1)} years` : "—";
-    document.getElementById("reportRecRoiDyn").textContent =
-      lastRecommended.dyn?.roi != null ? `${lastRecommended.dyn.roi.toFixed(1)} years` : "—";
-  } else {
-    document.getElementById("reportRecCap").textContent = "—";
-    document.getElementById("reportRecPower").textContent = "—";
-    document.getElementById("reportRecCost").textContent = "—";
-    document.getElementById("reportRecRoiFix").textContent = "—";
-    document.getElementById("reportRecRoiDyn").textContent = "—";
-  }
-
-  document.getElementById("reportNotes").innerHTML =
-    el.notes.innerHTML || "—";
-}
-
-function generatePdfReport() {
-  fillPdfReport();
-
-  const report = document.getElementById("pdfReport");
-  const app = document.querySelector(".wrap");
-  const header = document.querySelector("header");
-
-  // Make report visible before calling print
-  report.style.display = "block";
-  app.style.display = "none";
-  header.style.display = "none";
-
-  setTimeout(() => {
-    window.print();
-
-    // Restore UI after print dialog closes or is dismissed
-    setTimeout(() => {
-      report.style.display = "none";
-      app.style.display = "";
-      header.style.display = "";
-    }, 500);
-  }, 100);
-}
-
 
 // ---------- events ----------
 el.consFile.addEventListener("change", () => {
@@ -1143,6 +1355,9 @@ el.runSweep.addEventListener("click", async () => {
     alert("Upload eerst een verbruik CSV.");
     return;
   }
+  if ((el.autoObj.value.includes("dyn") || el.optForecast.checked) && !dynPrices){
+    el.sweepInfo.textContent = "Voor dynamische objective of forecast optimisation is een prijs JSON nodig.";
+  }
   await runSweepAndRecommend();
 });
 
@@ -1153,10 +1368,9 @@ el.applyRecommended.addEventListener("click", () => {
   renderSingleSimulation();
 });
 
-el.generatePdfBtn.addEventListener("click", generatePdfReport);
-
-
-
 // init
 updatePriceUrl();
 setProgress(0, "");
+</script>
+</body>
+</html>

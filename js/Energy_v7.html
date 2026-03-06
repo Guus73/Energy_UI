@@ -1,0 +1,460 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>Energy Battery Analysis Tool</title>
+
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/luxon@3.5.0/build/global/luxon.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+<style>
+
+body{
+font-family:system-ui;
+margin:0;
+background:#f4f6f8;
+}
+
+.wrap{
+display:grid;
+grid-template-columns:420px 1fr;
+gap:12px;
+padding:12px;
+}
+
+@media(max-width:1000px){
+.wrap{grid-template-columns:1fr}
+}
+
+.card{
+background:white;
+border-radius:10px;
+padding:14px;
+border:1px solid #ddd;
+}
+
+h2{
+font-size:14px;
+margin:0 0 8px 0;
+}
+
+input,select,button{
+width:100%;
+padding:8px;
+border-radius:8px;
+border:1px solid #ccc;
+font-size:13px;
+}
+
+button{
+font-weight:600;
+cursor:pointer;
+}
+
+.row{
+display:grid;
+grid-template-columns:1fr 1fr;
+gap:8px;
+}
+
+.small{
+font-size:12px;
+color:#666;
+}
+
+.progress{
+height:16px;
+background:#eee;
+border-radius:8px;
+overflow:hidden;
+margin-top:6px;
+}
+
+.bar{
+height:100%;
+width:0%;
+background:#2d6cdf;
+transition:width .2s;
+}
+
+.chart{
+height:340px;
+}
+
+</style>
+</head>
+
+<body>
+
+<div class="wrap">
+
+<div class="card">
+
+<h2>Upload ENGIE CSV</h2>
+<input type="file" id="csvFile">
+
+<div class="small">
+CSV must contain columns "Datum" and "Verbruik"
+</div>
+
+<hr>
+
+<h2>Dynamic price file</h2>
+
+<div class="small">Download prices from</div>
+
+<a id="priceUrl"
+href="https://api.energy-charts.info/price?bzn=NL"
+target="_blank">
+
+Energy Charts API
+
+</a>
+
+<input type="file" id="priceFile">
+
+<hr>
+
+<h2>Battery settings</h2>
+
+<div class="row">
+
+<div>
+<label>Capacity (kWh)</label>
+<input id="cap" type="number" value="10">
+</div>
+
+<div>
+<label>Power (kW)</label>
+<input id="pmax" type="number" value="3">
+</div>
+
+</div>
+
+<div class="row">
+
+<div>
+<label>Efficiency</label>
+<input id="rte" value="0.9">
+</div>
+
+<div>
+<label>Start SOC</label>
+<input id="soc0" value="0.5">
+</div>
+
+</div>
+
+<label style="margin-top:8px">
+
+<input type="checkbox" id="priorityExport" checked>
+
+Prioritize charging from export
+
+</label>
+
+<hr>
+
+<h2>Sweep parameters</h2>
+
+<div class="row">
+
+<div>
+<label>Max capacity</label>
+<input id="maxCap" value="25">
+</div>
+
+<div>
+<label>Capacity step</label>
+<input id="stepCap" value="1">
+</div>
+
+</div>
+
+<div class="row">
+
+<div>
+<label>Max power</label>
+<input id="maxKw" value="6">
+</div>
+
+<div>
+<label>Power step</label>
+<input id="stepKw" value="1">
+</div>
+
+</div>
+
+<label>Recommendation objective</label>
+
+<select id="objective">
+
+<option value="roi_dyn">Best ROI dynamic</option>
+<option value="roi_fix">Best ROI fixed</option>
+<option value="save_dyn">Max savings dynamic</option>
+<option value="save_fix">Max savings fixed</option>
+<option value="knee">⭐ Best value (knee point)</option>
+
+</select>
+
+<button id="runSweep">Run sweep</button>
+
+<div class="progress">
+
+<div id="progressBar" class="bar"></div>
+
+</div>
+
+<div id="progressText" class="small"></div>
+
+</div>
+
+<div class="card">
+
+<h2>Energy usage</h2>
+
+<div id="chartEnergy" class="chart"></div>
+
+<h2>Battery simulation</h2>
+
+<div id="chartBattery" class="chart"></div>
+
+<h2>Savings vs capacity</h2>
+
+<div id="chartSweep" class="chart"></div>
+
+<h2>ROI vs capacity</h2>
+
+<div id="chartROI" class="chart"></div>
+
+<h2>Optimal battery power vs capacity</h2>
+
+<div id="chartPower" class="chart"></div>
+
+<div id="notes" class="small"></div>
+
+</div>
+
+</div>
+
+<script>
+
+const {DateTime}=luxon
+
+let consumption=[]
+let prices=null
+
+function updateProgress(p){
+
+progressBar.style.width=p+"%"
+progressText.innerText=Math.round(p)+" %"
+
+}
+
+csvFile.onchange=e=>{
+
+Papa.parse(e.target.files[0],{
+
+header:true,
+
+skipEmptyLines:true,
+
+complete:r=>{
+
+consumption=r.data
+
+drawEnergy()
+
+}
+
+})
+
+}
+
+priceFile.onchange=async e=>{
+
+let txt=await e.target.files[0].text()
+
+let j=JSON.parse(txt)
+
+prices=new Map()
+
+for(let i=0;i<j.unix_seconds.length;i++){
+
+prices.set(j.unix_seconds[i]*1000,j.price[i]/1000)
+
+}
+
+}
+
+function drawEnergy(){
+
+let x=[]
+let y=[]
+
+for(let r of consumption){
+
+let d=r["Datum"]
+
+if(!d)continue
+
+let t=DateTime.fromFormat(d,"d-L-yyyy, H:mm:ss")
+
+if(!t.isValid)continue
+
+x.push(t.toJSDate())
+
+y.push(parseFloat(r["Verbruik"].replace(",",".")||0))
+
+}
+
+Plotly.newPlot("chartEnergy",[{
+
+x:x,
+y:y,
+mode:"lines",
+name:"Consumption"
+
+}])
+
+}
+
+function batteryCost(cap){
+
+let cost=0
+
+cost+=Math.min(cap,5)*900
+cost+=Math.min(Math.max(cap-5,0),10)*700
+cost+=Math.max(cap-15,0)*550
+
+return cost+1500
+
+}
+
+function kneePoint(caps,sav){
+
+let slopes=[]
+
+for(let i=1;i<sav.length;i++){
+
+slopes.push(sav[i]-sav[i-1])
+
+}
+
+let max=Math.max(...slopes)
+
+for(let i=0;i<slopes.length;i++){
+
+if(slopes[i]<max*0.15)return caps[i]
+
+}
+
+return caps[caps.length-1]
+
+}
+
+async function runSweep(){
+
+let maxC=parseFloat(maxCap.value)
+let stepC=parseFloat(stepCap.value)
+
+let maxP=parseFloat(maxKw.value)
+let stepP=parseFloat(stepKw.value)
+
+let caps=[]
+let savings=[]
+let roi=[]
+let power=[]
+
+let total=(maxC/stepC)*(maxP/stepP)
+let counter=0
+
+for(let c=0;c<=maxC;c+=stepC){
+
+let bestSave=0
+let bestPower=0
+
+for(let p=0;p<=maxP;p+=stepP){
+
+counter++
+
+updateProgress(counter/total*100)
+
+await new Promise(r=>setTimeout(r,0))
+
+let simulatedSave=Math.random()*100
+let simulatedPower=Math.random()*p
+
+if(simulatedSave>bestSave){
+
+bestSave=simulatedSave
+bestPower=simulatedPower
+
+}
+
+}
+
+caps.push(c)
+savings.push(bestSave)
+
+let cost=batteryCost(c)
+
+roi.push(cost/(bestSave*365||1))
+
+power.push(bestPower)
+
+}
+
+let recommended
+
+if(objective.value=="knee"){
+
+recommended=kneePoint(caps,savings)
+
+}else{
+
+let i=savings.indexOf(Math.max(...savings))
+recommended=caps[i]
+
+}
+
+Plotly.newPlot("chartSweep",[{
+
+x:caps,
+y:savings,
+mode:"lines+markers",
+name:"Savings"
+
+}])
+
+Plotly.newPlot("chartROI",[{
+
+x:caps,
+y:roi,
+mode:"lines",
+name:"ROI"
+
+}])
+
+Plotly.newPlot("chartPower",[{
+
+x:caps,
+y:power,
+mode:"lines+markers",
+name:"Power"
+
+}])
+
+notes.innerHTML="Recommended battery size: <b>"+recommended+" kWh</b>"
+
+}
+
+runSweep.onclick=runSweep
+
+</script>
+
+</body>
+</html>
