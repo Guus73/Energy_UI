@@ -1,23 +1,17 @@
-import { el } from "./dom.js"
-import { setProgress } from "./utils.js"
-
-console.log("Energy UI modular loaded")
-
-el.runSim.onclick = () => {
-
-    const x = []
-    const y = []
-
-    for(let i=0;i<24;i++){
-        x.push(i)
-        y.push(Math.random()*5)
-    }
-
-    Plotly.newPlot("chart",[{
-        x:x,
-        y:y,
-        mode:"lines",
-        name:"Demo load"
-    }])
-
-}
+import "./helpers.js";
+import "./parsing.js";
+import "./date_range.js";
+import "./aggregation.js";
+import "./prices.js";
+import "./consumption.js";
+import "./costs.js";
+import "./battery_cost.js";
+import "./models.js";
+import "./simulation_wrapper.js";
+import "./knee.js";
+import "./chart2_render:_one_shared_zero_line.js";
+import "./main_render.js";
+import "./single_simulation.js";
+import "./sweep.js";
+import "./pdf_report.js";
+import "./events.js";
