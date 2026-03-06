@@ -1,0 +1,29 @@
+body{
+margin:0;
+font-family:system-ui;
+background:#f8fafc;
+}
+
+header{
+padding:14px;
+border-bottom:1px solid #e5e7eb;
+background:white;
+}
+
+.wrap{
+display:grid;
+grid-template-columns:400px 1fr;
+gap:12px;
+padding:14px;
+}
+
+.card{
+background:white;
+border:1px solid #e5e7eb;
+border-radius:10px;
+padding:12px;
+}
+
+#chart{
+height:400px;
+}
